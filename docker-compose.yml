@@ -1,0 +1,59 @@
+version: "3.8"
+services:
+  db:
+    container_name: "postgres"
+    image: postgres:14.1-alpine
+    restart: always
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASS}
+      POSTGRES_DB: ${DB_NAME}
+    ports:
+      - ${DB_PORT}:${DB_PORT}
+    volumes:
+      - ./data/db:/var/lib/postgresql/data
+    networks:
+      - backend
+
+  fastapi:
+    container_name: "fastapi"
+    build: .
+    command: uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+    volumes:
+      - .:/code
+    networks:
+      - backend
+#  bot:
+#    container_name: "bot"
+#    build: ./bot
+#    command: python main.py
+#    restart: always
+#    env_file:
+#      - .env
+#    environment:
+#      - BOT_TOKEN=${BOT_TOKEN}
+#    ports:
+#      - "8080:8080"
+#    depends_on:
+#      - fastapi
+#    networks:
+#      - backend
+#
+#  cron_run:
+#    container_name: "cron_run"
+#    build: ./crontab
+#    command: cron -n
+#    depends_on:
+#      - bot
+#    networks:
+#      - backend
+
+networks:
+  backend:
+    driver: bridge
