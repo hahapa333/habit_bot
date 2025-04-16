@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Text, func, Boolean
+from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Text, func, Boolean, BigInteger
 from sqlalchemy.orm import relationship, declarative_base
 
 Base = declarative_base()
@@ -9,7 +9,7 @@ class User(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     username = Column(String(50), nullable=False, unique=True)
-    telegram_id = Column(Integer, nullable=False, unique=True)
+    telegram_id = Column(BigInteger, nullable=False, unique=True)
     created_at = Column(DateTime, server_default=func.now())
     is_active = Column(Boolean, nullable=False, server_default="true")
     hashed_password = Column(String(255), nullable=False)  # Хэшированный пароль

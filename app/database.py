@@ -2,6 +2,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.config import settings
+import logging
 
 # Создаем асинхронный движок SQLAlchemy для PostgreSQL
 engine = create_async_engine(settings.DATABASE_URL, echo=True)
@@ -16,5 +17,11 @@ async_session = sessionmaker(
 
 # Функция для запроса сессии
 async def get_db():
-    async with async_session() as session:
-        yield session
+    try:
+        async with async_session() as session:
+            yield session
+    except Exception as e:
+        # Логируем ошибки базы данных
+        logging.error(f"Ошибка при открытии сессии БД: {e}")
+        raise
+

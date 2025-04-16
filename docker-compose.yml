@@ -19,31 +19,24 @@ services:
 
   fastapi:
     container_name: "fastapi"
-    build: .
-    command: uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn app.main:app --reload --host ${WEBAPP_HOST} --port ${WEBAPP_PORT} & python app/main.py
     ports:
       - "8000:8000"
     depends_on:
       - db
     volumes:
       - .:/code
+    environment:
+      PYTHONPATH: /code
+    working_dir: /code
     networks:
       - backend
-#  bot:
-#    container_name: "bot"
-#    build: ./bot
-#    command: python main.py
-#    restart: always
-#    env_file:
-#      - .env
-#    environment:
-#      - BOT_TOKEN=${BOT_TOKEN}
-#    ports:
-#      - "8080:8080"
-#    depends_on:
-#      - fastapi
-#    networks:
-#      - backend
+
+
+
 #
 #  cron_run:
 #    container_name: "cron_run"

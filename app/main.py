@@ -1,98 +1,150 @@
-from datetime import timedelta
-from typing import Dict
 
-from fastapi import FastAPI, Depends, HTTPException, Request
-from passlib.context import CryptContext
-from sqlalchemy import select
-from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.schemas import HabitCreate, UserCreate
-from models_db.models import Habit, Base, User
-from models_db.database import get_db, engine
-# from fastapi.security import OAuth2PasswordRequestForm
-# from app.auth import create_access_token, get_current_user
+from fastapi import FastAPI, Depends
+from aiogram import Bot, Dispatcher, types, Router
+from aiogram.types import Update, Message, BotCommand
+from aiogram.filters import Command  # Для поддержки фильтров с новыми принципами работы
 from app.config import settings
-from app.schemas import HabitCreate, UserCreate
+import logging
+import bcrypt
 
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+from app.database import engine, get_db, async_session
+from app.models import Base, User, Habit
+from aiogram.filters import Command
+
+
+BOT_TOKEN = settings.BOT_TOKEN  # Токен бота
+WEBHOOK_URL = settings.WEBHOOK_URL  # Публичный адрес вашего сервера
+WEBHOOK_PATH = settings.WEBHOOK_PATH # Путь для Webhook
+
+
+# Инициализация бота и диспетчера
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()  # Диспетчер теперь создаётся без аргументов
+router = Router()
+# Логирование
+logging.basicConfig(level=logging.INFO)
+
+
+def hash_password(password: str) -> str:
+    """Хеширование пароля."""
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+
+# Регистрация маршрутов
+@router.message(Command("start"))
+async def start_command(message: Message):
+    await message.reply("Привет! Я работаю через Webhook!")
+
+@router.message(Command("echo"))
+async def echo_handler(message: Message):
+    await message.answer(f"Вы сказали: {message.text}")
+
+# Подключаем роутер к диспетчеру
+dp.include_router(router)
+
+# Инициализация FastAPI
 app = FastAPI()
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-users_db: Dict[str, UserCreate] = {
-    "example_user": UserCreate(
-        username="example_user",
-        hashed_password=pwd_context.hash("password"),
-        telegram_id=12345
-    )
-}
-
-# Генерация таблиц при старте сервера
-@app.on_event("startup")
-async def startup_event():
-    async with engine.begin() as conn:
-        # Генерирует таблицы в базе данных
-        await conn.run_sync(Base.metadata.create_all)
-
-
-@app.post("/habits/")
-async def create_habit(habit: HabitCreate,
-                       db: AsyncSession = Depends(get_db) # Получаем текущего пользователя
-                       ):
+# Webhook endpoint
+@app.post(WEBHOOK_PATH)
+async def telegram_webhook(update: dict):  # Тип данных изменён на dict
+    """Получает обновления от Telegram"""
     try:
-        new_habit = Habit(name_habit=habit.name_habit,
-                          description=habit.description,
-                          user_id=2)
-        db.add(new_habit)
-        await db.commit()
-        await db.refresh(new_habit)
-        return new_habit
-    except SQLAlchemyError as e:
-        await db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to create habit {e}")
+        telegram_update = Update(**update)
+        await dp.feed_update(bot, telegram_update)  # Новый метод для обработки обновлений
+    except Exception as e:
+        logging.error(f"Ошибка обработки Webhook: {e}")
+    return {"ok": True}
 
 
-@app.get("/habits/")
-async def get_habits(db: AsyncSession = Depends(get_db)):
-    habits = await db.execute(select(Habit))
-    return [habit for habit in habits.scalars()]
+# Установка Webhook перед запуском приложения
+@app.on_event("startup")
+async def on_startup():
+    # Автоматическое создание схемы БД
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+        logging.info("Таблицы созданы в базе данных PostgreSQL.")
+
+    # Настройка команд бота
+    await set_bot_commands(bot)
+
+    await bot.set_webhook(WEBHOOK_URL + WEBHOOK_PATH)
+    logging.info(f"Webhook установлен на {WEBHOOK_URL + WEBHOOK_PATH}")
 
 
-@app.post("/register/")
-async def create_user(user: UserCreate, db: AsyncSession = Depends(get_db)):
-    existing_user = await db.execute(select(User).where(User.username == user.username))
-    if existing_user.scalars().first():
-        raise HTTPException(status_code=400, detail="Username already exists")
+@app.get("/")
+async def root():
+    return {"message": "PostgreSQL подключён успешно."}
 
-    hashed_password = pwd_context.hash(user.hashed_password)
-    new_user = User(
-        username=user.username,
-        hashed_password=hashed_password,
-        telegram_id=user.telegram_id  # Указываем значение telegram_id
+# Удаление Webhook при завершении работы
+@app.on_event("shutdown")
+async def on_shutdown():
+    await bot.session.close()
+    logging.info("Бот остановлен, Webhook удален")
+
+
+# Команда для добавления пользователя
+@router.message(Command("adduser"))
+async def add_user_handler(message: Message):
+    async with async_session() as db:
+        try:
+            username = message.from_user.username or "Без имени"
+            telegram_id = message.from_user.id
+
+            # SQL-запрос
+            query = select(User).where(User.telegram_id == telegram_id)
+            result = await db.execute(query)
+            user = result.scalar()
+
+            if user:
+                await message.reply("Пользователь уже существует!")
+            else:
+                new_user = User(
+                    username=username,
+                    telegram_id=telegram_id,
+                    hashed_password="hashed"
+                )
+                db.add(new_user)
+                await db.commit()
+                await message.reply(f"Пользователь {username} успешно добавлен!")
+        except Exception as e:
+            await message.reply("Произошла ошибка!")
+            logging.error(f"Ошибка: {e}")
+
+
+# Команда для получения всех пользователей
+@router.message(Command("users"))
+async def list_users_handler(message: Message):
+    async with async_session() as db:
+        result = await db.execute(select(User))
+        users = result.scalars().all()
+        if not users:
+            await message.reply("В базе данных нет пользователей.")
+        else:
+            user_list = "\n".join([f"{user.id}: {user.username}" for user in users])
+            await message.reply(f"Список пользователей:\n{user_list}")
+
+
+# Обработчик команды /help
+@router.message(Command("help"))
+async def help_command(message: Message):
+    commands = (
+        "/start - Начать взаимодействие с ботом\n"
+        "/help - Показать список команд\n"
+        "/echo - Повторить ваше сообщение\n"
     )
-
-    db.add(new_user)
-    await db.commit()
-    await db.refresh(new_user)
-    return new_user
+    await message.answer(f"Список доступных команд:\n{commands}")
 
 
-# @app.post("/token")
-# async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
-#     # users_db = {"test_user": {"username": "test_user", "password": "hashed_password"}}
-#     user = users_db.get(form_data.username)  # Поиск пользователя в "базе данных"
-#     if not user or not pwd_context.verify(form_data.password, user["hashed_password"]):
-#         # Проверка пароля
-#         raise HTTPException(
-#             status_code=401,
-#             detail="Incorrect username or password",
-#         )
-#     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-#     access_token = create_access_token(
-#         data={"sub": user["username"]}, expires_delta=access_token_expires
-#     )
-#     return {"access_token": access_token,
-#             "token_type": "bearer",
-#             "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES,
-#             "username": user.username
-#             }
+async def set_bot_commands(bot: Bot):
+    commands = [
+        BotCommand(command="start", description="Начать работу с ботом"),
+        BotCommand(command="help", description="Показать список команд"),
+        BotCommand(command="adduser", description="Добавить нового пользователя"),
+        BotCommand(command="users", description="Показать список пользователей"),
+        BotCommand(command="echo", description="Повторить ваше сообщение"),
+    ]
+    await bot.set_my_commands(commands)
