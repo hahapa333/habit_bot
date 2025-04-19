@@ -22,9 +22,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: uvicorn app.main:app --reload --host ${WEBAPP_HOST} --port ${WEBAPP_PORT} & python app/main.py
+    command: >
+      bash -c "
+      ./wait-for-it.sh db:5432 -- alembic upgrade head &&
+      uvicorn app.main:app --reload --host ${WEBAPP_HOST} --port ${WEBAPP_PORT}
+      "
+
     ports:
-      - "8000:8000"
+      - ${WEBAPP_PORT}:${WEBAPP_PORT}
     depends_on:
       - db
     volumes:
@@ -36,6 +41,20 @@ services:
       - backend
 
 
+#  bot:
+#    container_name: aiogram-bot
+#    build:
+#      context: .
+#      dockerfile: Dockerfile
+#    image: aiogram-bot:latest
+#    restart: unless-stopped
+#    env_file:
+#      - .env
+#    environment:
+#      BOT_TOKEN: ${BOT_TOKEN}
+#    volumes:
+#      - .:/bot
+#    command: python app/aiogram_run.py
 
 #
 #  cron_run:

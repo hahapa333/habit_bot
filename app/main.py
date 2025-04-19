@@ -3,7 +3,7 @@ from fastapi import FastAPI, Depends
 from aiogram import Bot, Dispatcher, types, Router
 from aiogram.types import Update, Message, BotCommand
 from aiogram.filters import Command  # Для поддержки фильтров с новыми принципами работы
-from app.config import settings
+from app.config_env import settings
 import logging
 import bcrypt
 
@@ -63,6 +63,7 @@ async def telegram_webhook(update: dict):  # Тип данных изменён 
 # Установка Webhook перед запуском приложения
 @app.on_event("startup")
 async def on_startup():
+
     # Автоматическое создание схемы БД
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -93,6 +94,7 @@ async def add_user_handler(message: Message):
         try:
             username = message.from_user.username or "Без имени"
             telegram_id = message.from_user.id
+            hashed_password = hash_password("hashed")
 
             # SQL-запрос
             query = select(User).where(User.telegram_id == telegram_id)
@@ -105,7 +107,7 @@ async def add_user_handler(message: Message):
                 new_user = User(
                     username=username,
                     telegram_id=telegram_id,
-                    hashed_password="hashed"
+                    hashed_password=hashed_password
                 )
                 db.add(new_user)
                 await db.commit()

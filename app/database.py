@@ -1,7 +1,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.config import settings
+from app.config_env import settings
 import logging
 
 # Создаем асинхронный движок SQLAlchemy для PostgreSQL
