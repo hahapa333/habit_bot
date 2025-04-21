@@ -1,5 +1,6 @@
 from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Text, func, Boolean, BigInteger
-from sqlalchemy.orm import relationship, declarative_base
+# from sqlalchemy.ext.declarative import  declarative_base
+from sqlalchemy.orm import relationship,declarative_base
 
 Base = declarative_base()
 
@@ -27,6 +28,9 @@ class Habit(Base):
     name_habit = Column(String(100), nullable=False)
     description = Column(String(100), nullable=True)
     created_at = Column(DateTime, server_default=func.now())
+    is_completed = Column(Boolean, default=False)
+
+
 
     # Внешний ключ на пользователя
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)

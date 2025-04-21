@@ -17,26 +17,36 @@ services:
     networks:
       - backend
 
+  alembic:
+    image: my-alembic-image
+    build:
+      context: .
+    env_file:
+      - .env  # Указывает на .env файл в текущей директории
+    command: ./wait-for-it.sh db:5432 -- alembic upgrade head
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+    networks:
+      - backend
+
+
   fastapi:
     container_name: "fastapi"
     build:
       context: .
       dockerfile: Dockerfile
-    command: >
-      bash -c "
-      ./wait-for-it.sh db:5432 -- alembic upgrade head &&
-      uvicorn app.main:app --reload --host ${WEBAPP_HOST} --port ${WEBAPP_PORT}
-      "
+    command:  uvicorn app.main:app --reload --host ${WEBAPP_HOST} --port ${WEBAPP_PORT}
 
     ports:
       - ${WEBAPP_PORT}:${WEBAPP_PORT}
     depends_on:
       - db
+      - alembic
     volumes:
       - .:/code
-    environment:
-      PYTHONPATH: /code
-    working_dir: /code
+
     networks:
       - backend
 

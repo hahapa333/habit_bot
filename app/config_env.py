@@ -1,21 +1,26 @@
 from pydantic_settings import BaseSettings  # Импорт из нового пакета
+from typing import Optional
 
 
 
 class Settings(BaseSettings):
-    DB_USER: str
-    DB_PASS: str
-    DB_HOST: str
-    DB_PORT: int
-    DB_NAME: str
-    DATABASE_URL: str = None
-    WEBHOOK_URL: str
-    WEBHOOK_PATH: str
+    DB_USER: Optional[str] = "postgres"
+    DB_PASS: Optional[str] = "postgres"
+    DB_HOST: Optional[str] = "db"
+    DB_PORT: Optional[int] = 5432  # По умолчанию используется порт PostgreSQL
+    DB_NAME: Optional[str] = "habit_db"
+
+    DATABASE_URL: Optional[str] = None
+    WEBHOOK_URL: Optional[str] = None
+    WEBHOOK_PATH: Optional[str] = None
+
     WEBAPP_HOST: str
-    WEBAPP_PORT: int
+    WEBAPP_PORT: Optional[int] = 8000  # Значение по умолчанию
+
     BOT_TOKEN: str  # Объявляем недостающее поле, соответствующее bot_token в .env-файле
     ALGORITHM: str
-    ACCESS_TOKEN_EXPIRE_MINUTES: int
+    ACCESS_TOKEN_EXPIRE_MINUTES: Optional[int] = 15
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.DATABASE_URL = (
