@@ -6,6 +6,8 @@ from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI
 from aiogram import Bot, Dispatcher, Router
 from aiogram.types import Update, Message, BotCommand
+from sqlalchemy.orm import selectinload
+
 from app.config_env import settings
 import logging
 import bcrypt
@@ -210,42 +212,34 @@ async def add_habit(message: Message):
 # Команда для получения всех привычек пользователя
 @router.message(Command("habit_list"))
 async def list_habits(message: Message):
-    telegram_id = message.from_user.id
+    async with async_session() as session:
+        telegram_id = message.from_user.id
 
-    async with async_session() as db:
-        result = await db.execute(select(User).where(User.telegram_id == telegram_id))
-        user = result.scalar()
+        result = await session.execute(
+            select(User)
+            .where(User.telegram_id == telegram_id)
+            .options(
+                selectinload(User.habits).selectinload(Habit.schedules)
+            )
+        )
+        user = result.scalar_one_or_none()
 
         if not user:
-            await message.answer("Ошибка: пользователь не найден.")
+            await message.answer("❌ Пользователь не найден.")
             return
 
-        # Получаем привычки
-        result = await db.execute(select(Habit).filter(Habit.user_id == user.id))
-        habits = result.scalars().all()
+        if not user.habits:
+            await message.answer("ℹ️ У вас пока нет привычек.")
+            return
 
-        # Получаем расписания
-        result = await db.execute(select(UserSchedule).filter(UserSchedule.user_id == user.id))
-        schedules = result.scalars().all()
+        response_lines = []
+        for habit in user.habits:
+            schedule_times = [s.time for s in habit.schedules]
+            times_text = ", ".join(schedule_times) if schedule_times else "⏰ Нет напоминаний"
+            status = "✅ Выполнено" if habit.is_completed else "❌ Не выполнено"
+            response_lines.append(f"{habit.id}. {habit.name_habit} — {status}\n   🕒 Напоминания: {times_text}")
 
-        # Формируем текст
-        text = ""
-        if habits:
-            text += "📋 Ваши привычки:\n"
-            for habit in habits:
-                text += f"{habit.id}. {habit.name_habit} — "
-                text += "✅ Выполнено\n" if habit.is_completed else "❌ Не выполнено\n"
-        else:
-            text += "У вас пока нет привычек.\n"
-
-        if schedules:
-            text += "\n⏰ Ваши напоминания:\n"
-            for sched in schedules:
-                text += f"• Время: {sched.time}\n"
-        else:
-            text += "\nНет установленных напоминаний."
-
-        await message.answer(text)
+        await message.answer("📋 Ваши привычки и расписания:\n\n" + "\n\n".join(response_lines))
 
 
 
@@ -414,45 +408,53 @@ async def set_habit_status(message: Message, command: CommandObject):
 async def set_schedule(message: Message):
     try:
         parts = message.text.strip().split()
-        if len(parts) != 2:
-            raise ValueError("Неверный формат команды.")
+        if len(parts) != 3:
+            raise ValueError("Неверный формат команды. Используйте: /set_schedule <habit_id> <HH:MM>")
 
-        time_str = parts[1]
+        habit_id = int(parts[1])
+        time_str = parts[2]
         hour, minute = map(int, time_str.split(":"))
+
         if not (0 <= hour < 24 and 0 <= minute < 60):
             raise ValueError("Неверный диапазон времени.")
 
         async with async_session() as session:
-            # Ищем пользователя по telegram_id
-            result = await session.execute(
-                select(User).where(User.telegram_id == message.from_user.id)
-            )
-            user = result.scalar_one_or_none()
+            # Проверяем, принадлежит ли привычка пользователю
+            user_query = select(User).where(User.telegram_id == message.from_user.id)
+            user_result = await session.execute(user_query)
+            user = user_result.scalar_one_or_none()
 
-            if user is None:
-                await message.answer("❌ Пользователь не зарегистрирован.")
-                return
+            if not user:
+                raise ValueError("Пользователь не найден.")
 
-            # Сохраняем расписание
-            new_schedule = UserSchedule(user_id=user.id, time=time_str)
+            habit_query = select(Habit).where(Habit.id == habit_id, Habit.user_id == user.id)
+            habit_result = await session.execute(habit_query)
+            habit = habit_result.scalar_one_or_none()
+
+            if not habit:
+                raise ValueError("Привычка не найдена или не принадлежит вам.")
+
+            # Создаём новое расписание
+            new_schedule = UserSchedule(habit_id=habit_id, time=time_str)
             session.add(new_schedule)
             await session.commit()
 
-            # Добавляем задачу в планировщик
-            job_id = f"reminder_{user.telegram_id}"
+            # Планируем задачу
+            job_id = f"reminder_{new_schedule.id}"
             scheduler.add_job(
                 schedule_habit_reminder,
                 trigger=CronTrigger(hour=hour, minute=minute, timezone=TIMEZONE),
-                args=[user.telegram_id],
+                args=[user.telegram_id, habit.name_habit],
                 id=job_id,
                 replace_existing=True
             )
 
-        await message.answer(f"✅ Добавлено напоминание на {time_str}")
+        await message.answer(f"✅ Добавлено напоминание для '{habit.name_habit}' на {time_str}")
 
-    except ValueError:
-        await message.answer("❌ Формат команды: /set_schedule HH:MM")
+    except ValueError as ve:
+        await message.answer(f"❌ {ve}")
     except Exception as e:
+        logging.error(f"Ошибка при установке расписания: {e}")
         await message.answer(f"⚠️ Ошибка: {e}")
 
 

@@ -16,7 +16,7 @@ class User(Base):
     created_at = Column(DateTime, server_default=func.now())
 
     habits = relationship("Habit", back_populates="user", cascade="all, delete-orphan")
-    schedules = relationship("UserSchedule", back_populates="user", cascade="all, delete-orphan")
+
 
     def __repr__(self):
         return f"<User(id={self.id}, telegram_id={self.telegram_id})>"
@@ -34,7 +34,7 @@ class Habit(Base):
 
     user_id = Column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     user = relationship("User", back_populates="habits")
-
+    schedules = relationship("UserSchedule", back_populates="habit", cascade="all, delete-orphan")
     def __repr__(self):
         return f"<Habit(name='{self.name_habit}', user_id={self.user_id})>"
 
@@ -43,10 +43,10 @@ class UserSchedule(Base):
     __tablename__ = "user_schedules"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     time = Column(String(5), nullable=False)  # формат HH:MM
-
-    user = relationship("User", back_populates="schedules")
+    habit_id = Column(Integer, ForeignKey("habits.id", ondelete="CASCADE"), nullable=False)
+    habit = relationship("Habit", back_populates="schedules")
 
     def __repr__(self):
-        return f"<UserSchedule(user_id={self.user_id}, time='{self.time}')>"
+        return f"<UserSchedule(habit_id={self.habit_id}, time='{self.time}')>"
+
