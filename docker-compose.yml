@@ -17,6 +17,7 @@ services:
     networks:
       - backend
 
+
   alembic:
     image: my-alembic-image
     build:
@@ -26,8 +27,6 @@ services:
     command: ./wait-for-it.sh db:5432 -- alembic upgrade head
     depends_on:
       - db
-    environment:
-      DATABASE_URL: ${DATABASE_URL}
     networks:
       - backend
 
@@ -38,41 +37,66 @@ services:
       context: .
       dockerfile: Dockerfile
     command:  uvicorn app.main:app --reload --host ${WEBAPP_HOST} --port ${WEBAPP_PORT}
-
     ports:
       - ${WEBAPP_PORT}:${WEBAPP_PORT}
+    restart: always
     depends_on:
       - db
       - alembic
     volumes:
       - .:/code
-
+    working_dir: /code
+    env_file:
+      - .env  # Указывает на .env файл в текущей директории
     networks:
       - backend
 
 
-#  bot:
-#    container_name: aiogram-bot
+#  redis:
+#    image: redis:7
+#    container_name: redis
+#    ports:
+#      - "6379:6379"
+#    command: [ "redis-server", "--bind", "redis", "--port", "6379" ]
+#
+#    restart: unless-stopped
+#    networks:
+#      - backend
+
+#  celery_worker:
+#    container_name: celery_worker
 #    build:
 #      context: .
 #      dockerfile: Dockerfile
-#    image: aiogram-bot:latest
-#    restart: unless-stopped
-#    env_file:
-#      - .env
-#    environment:
-#      BOT_TOKEN: ${BOT_TOKEN}
-#    volumes:
-#      - .:/bot
-#    command: python app/aiogram_run.py
-
-#
-#  cron_run:
-#    container_name: "cron_run"
-#    build: ./crontab
-#    command: cron -n
+#    command: [ "celery", "-A", "app.celery_app", "worker", "--loglevel=info" ]
+#    restart: always
 #    depends_on:
-#      - bot
+#      - redis
+#      - fastapi
+#      - db
+#    working_dir: /code
+#    volumes:
+#      - .:/code
+#    env_file:
+#      - .env  # Указывает на .env файл в текущей директории
+#    networks:
+#      - backend
+#
+#  celery_beat:
+#    build:
+#      context: .
+#      dockerfile: Dockerfile
+#    container_name: celery_beat
+#    command: [ "celery", "-A", "app.celery_app", "beat", "--loglevel=info" ]
+#    depends_on:
+#      - redis
+#      - fastapi
+#      - db
+#    working_dir: /code
+#    volumes:
+#      - .:/code
+#    env_file:
+#      - .env  # Указывает на .env файл в текущей директории
 #    networks:
 #      - backend
 

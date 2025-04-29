@@ -1,3 +1,8 @@
+import asyncio
+from datetime import datetime
+
+import aioschedule
+from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI
 from aiogram import Bot, Dispatcher, Router
 from aiogram.types import Update, Message, BotCommand
@@ -7,20 +12,22 @@ import bcrypt
 
 from sqlalchemy.future import select
 from app.database import engine, async_session
-from app.models import Base, User, Habit
+from app.models import Base, User, Habit, UserSchedule
 from aiogram.filters import Command, CommandObject
 
+from app.bot import bot, dp, BOT_TOKEN, WEBHOOK_URL, WEBHOOK_PATH
+# from app.scheduler import scheduler, schedule_habit_reminder, schedule_interval
 
-BOT_TOKEN = settings.BOT_TOKEN  # Токен бота
-WEBHOOK_URL = settings.WEBHOOK_URL  # Публичный адрес вашего сервера
-WEBHOOK_PATH = settings.WEBHOOK_PATH  # Путь для Webhook
 
-# Инициализация бота и диспетчера
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()  # Диспетчер теперь создаётся без аргументов
+import collections.abc
+
+from app.scheduler import scheduler, TIMEZONE, schedule_habit_reminder, load_schedules_from_db
+
+collections.Hashable = collections.abc.Hashable
+
 router = Router()
 # Логирование
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 
 def hash_password(password: str) -> str:
@@ -31,7 +38,7 @@ def hash_password(password: str) -> str:
 # Регистрация маршрутов
 @router.message(Command("start"))
 async def start_command(message: Message):
-    await message.reply("Привет! Я работаю через Webhook!")
+    await message.answer(f"Привет{message.from_user.username}")
 
 
 @router.message(Command("echo"))
@@ -59,21 +66,52 @@ async def telegram_webhook(update: dict):  # Тип данных изменён 
 
 
 # Установка Webhook перед запуском приложения
+
 @app.on_event("startup")
 async def on_startup():
-    # Для тестирования в env.py временно добавьте:
-    print(Base.metadata.tables.keys())
+    # Настройка логирования
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s"
+    )
 
-    # Автоматическое создание схемы БД
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        logging.info("Таблицы созданы в базе данных PostgreSQL.")
+    # Автоматическое создание схемы БД (рекомендуется заменить на Alembic)
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            logging.info("Таблицы созданы в базе данных PostgreSQL.")
+    except Exception as e:
+        logging.error(f"Ошибка при создании таблиц: {e}")
+        raise
 
-    # Настройка команд бота
-    await set_bot_commands(bot)
+    # Установка команд бота
+    try:
+        await set_bot_commands(bot)
+    except Exception as e:
+        logging.error(f"Ошибка при установке команд бота: {e}")
+        raise
 
-    await bot.set_webhook(WEBHOOK_URL + WEBHOOK_PATH)
-    logging.info(f"Webhook установлен на {WEBHOOK_URL + WEBHOOK_PATH}")
+    # Установка webhook
+    try:
+        assert WEBHOOK_URL, "WEBHOOK_URL не задан."
+        assert WEBHOOK_PATH, "WEBHOOK_PATH не задан."
+        await bot.set_webhook(WEBHOOK_URL + WEBHOOK_PATH)
+        logging.info(f"Webhook установлен на {WEBHOOK_URL + WEBHOOK_PATH}")
+    except Exception as e:
+        logging.error(f"Ошибка при установке Webhook: {e}")
+        raise
+
+    # Запуск планировщика (раскомментируйте, если используется)
+    try:
+        async with async_session() as db:
+            await load_schedules_from_db(db)  # ✅ Загрузка всех задач
+        scheduler.start()
+
+        # await dp.start_polling(schedule_habit_reminder)
+        # asyncio.create_task(scheduler())
+    except Exception as e:
+        logging.error(f"Ошибка при запуске планировщика: {e}")
+        raise
 
 
 @app.get("/")
@@ -84,6 +122,12 @@ async def root():
 # Удаление Webhook при завершении работы
 @app.on_event("shutdown")
 async def on_shutdown():
+    """Остановка задач при завершении приложения"""
+    task = app.state.scheduler_task
+    if task:
+        task.cancel()
+        logging.info("Задача планировщика остановлена.")
+
     await bot.session.close()
     logging.info("Бот остановлен, Webhook удален")
 
@@ -166,29 +210,43 @@ async def add_habit(message: Message):
 # Команда для получения всех привычек пользователя
 @router.message(Command("habit_list"))
 async def list_habits(message: Message):
+    telegram_id = message.from_user.id
+
     async with async_session() as db:
-        telegram_id = message.from_user.id
-        # SQL-запрос
-        query = select(User).where(User.telegram_id == telegram_id)
-        result = await db.execute(query)
+        result = await db.execute(select(User).where(User.telegram_id == telegram_id))
         user = result.scalar()
 
-    if user:
-        query = select(Habit).filter(Habit.user_id == user.id)
-        habits = await db.execute(query)
+        if not user:
+            await message.answer("Ошибка: пользователь не найден.")
+            return
 
-        habits = habits.scalars().all()
+        # Получаем привычки
+        result = await db.execute(select(Habit).filter(Habit.user_id == user.id))
+        habits = result.scalars().all()
 
+        # Получаем расписания
+        result = await db.execute(select(UserSchedule).filter(UserSchedule.user_id == user.id))
+        schedules = result.scalars().all()
+
+        # Формируем текст
+        text = ""
         if habits:
-            text = "\n".join(
-                [f"{habit.id}. {habit.name_habit}"
-                 for habit in habits]
-            )
-            await message.answer(f"Ваши привычки:\n{text}")
+            text += "📋 Ваши привычки:\n"
+            for habit in habits:
+                text += f"{habit.id}. {habit.name_habit} — "
+                text += "✅ Выполнено\n" if habit.is_completed else "❌ Не выполнено\n"
         else:
-            await message.answer("У вас пока нет привычек.")
-    else:
-        await message.answer("Ошибка: пользователь не найден.")
+            text += "У вас пока нет привычек.\n"
+
+        if schedules:
+            text += "\n⏰ Ваши напоминания:\n"
+            for sched in schedules:
+                text += f"• Время: {sched.time}\n"
+        else:
+            text += "\nНет установленных напоминаний."
+
+        await message.answer(text)
+
 
 
 from aiogram.filters.command import CommandObject
@@ -350,6 +408,55 @@ async def set_habit_status(message: Message, command: CommandObject):
         status_message = "выполнена" if is_completed else "не выполнена"
         await message.answer(f"Привычка {habit.id} успешно отмечена как {status_message}.")
 
+
+# === Команда установки расписания ===
+@router.message(Command("set_schedule"))
+async def set_schedule(message: Message):
+    try:
+        parts = message.text.strip().split()
+        if len(parts) != 2:
+            raise ValueError("Неверный формат команды.")
+
+        time_str = parts[1]
+        hour, minute = map(int, time_str.split(":"))
+        if not (0 <= hour < 24 and 0 <= minute < 60):
+            raise ValueError("Неверный диапазон времени.")
+
+        async with async_session() as session:
+            # Ищем пользователя по telegram_id
+            result = await session.execute(
+                select(User).where(User.telegram_id == message.from_user.id)
+            )
+            user = result.scalar_one_or_none()
+
+            if user is None:
+                await message.answer("❌ Пользователь не зарегистрирован.")
+                return
+
+            # Сохраняем расписание
+            new_schedule = UserSchedule(user_id=user.id, time=time_str)
+            session.add(new_schedule)
+            await session.commit()
+
+            # Добавляем задачу в планировщик
+            job_id = f"reminder_{user.telegram_id}"
+            scheduler.add_job(
+                schedule_habit_reminder,
+                trigger=CronTrigger(hour=hour, minute=minute, timezone=TIMEZONE),
+                args=[user.telegram_id],
+                id=job_id,
+                replace_existing=True
+            )
+
+        await message.answer(f"✅ Добавлено напоминание на {time_str}")
+
+    except ValueError:
+        await message.answer("❌ Формат команды: /set_schedule HH:MM")
+    except Exception as e:
+        await message.answer(f"⚠️ Ошибка: {e}")
+
+
+
 # Обработчик команды /help
 @router.message(Command("help"))
 async def help_command(message: Message):
@@ -372,6 +479,7 @@ async def set_bot_commands(bot: Bot):
         BotCommand(command="edit_habit", description="Редактировать привычку"),
         BotCommand(command="delete_habit", description="Удалить привычку"),
         BotCommand(command="set_habit_status", description="выполнил не выполнил"),
+        BotCommand(command="set_schedule", description="установить напоминание"),
         BotCommand(command="echo", description="Повторить ваше сообщение"),
     ]
     await bot.set_my_commands(commands)

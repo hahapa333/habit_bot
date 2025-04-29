@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     ALGORITHM: str
     ACCESS_TOKEN_EXPIRE_MINUTES: Optional[int] = 15
 
+    CELERY_BROKER: Optional[str] = "redis://localhost:6379/0"
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.DATABASE_URL = (

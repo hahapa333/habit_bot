@@ -5,8 +5,9 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/code
 
+RUN ln -sf /usr/share/zoneinfo/Europe/Moscow /etc/localtime && echo "Europe/Moscow" > /etc/timezone
 # Шаг 1: Установка системных зависимостей
-RUN apt-get update && apt-get install -y --no-install-recommends python3-dev \
+RUN apt-get update && apt-get install -y --no-install-recommends python3-dev\
     && rm -rf /var/lib/apt/lists/*
 
 # Обновляем pip и устанавливаем Poetry
