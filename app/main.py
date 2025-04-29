@@ -6,6 +6,7 @@ from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI
 from aiogram import Bot, Dispatcher, Router
 from aiogram.types import Update, Message, BotCommand
+from sqlalchemy import update
 from sqlalchemy.orm import selectinload
 
 from app.config_env import settings
@@ -23,7 +24,7 @@ from app.bot import bot, dp, BOT_TOKEN, WEBHOOK_URL, WEBHOOK_PATH
 
 import collections.abc
 
-from app.scheduler import scheduler, TIMEZONE, schedule_habit_reminder, load_schedules_from_db
+from app.scheduler import scheduler, TIMEZONE, schedule_habit_reminder, load_schedules_from_db, reset_habit_completion
 
 collections.Hashable = collections.abc.Hashable
 
@@ -40,6 +41,32 @@ def hash_password(password: str) -> str:
 # Регистрация маршрутов
 @router.message(Command("start"))
 async def start_command(message: Message):
+    async with async_session() as db:
+        try:
+            username = message.from_user.username or "Без имени"
+            telegram_id = message.from_user.id
+            hashed_password = hash_password("hashed")
+
+            # SQL-запрос
+            query = select(User).where(User.telegram_id == telegram_id)
+            result = await db.execute(query)
+            user = result.scalar()
+
+            if user:
+                await message.reply("Пользователь уже существует!")
+            else:
+                new_user = User(
+                    username=username,
+                    telegram_id=telegram_id,
+                    hashed_password=hashed_password
+                )
+                db.add(new_user)
+                await db.commit()
+                await message.reply(f"Пользователь {username} успешно добавлен!")
+        except Exception as e:
+            await message.reply("Произошла ошибка!")
+            logging.error(f"Ошибка: {e}")
+
     await message.answer(f"Привет{message.from_user.username}")
 
 
@@ -134,36 +161,6 @@ async def on_shutdown():
     logging.info("Бот остановлен, Webhook удален")
 
 
-# Команда для добавления пользователя
-@router.message(Command("adduser"))
-async def add_user_handler(message: Message):
-    async with async_session() as db:
-        try:
-            username = message.from_user.username or "Без имени"
-            telegram_id = message.from_user.id
-            hashed_password = hash_password("hashed")
-
-            # SQL-запрос
-            query = select(User).where(User.telegram_id == telegram_id)
-            result = await db.execute(query)
-            user = result.scalar()
-
-            if user:
-                await message.reply("Пользователь уже существует!")
-            else:
-                new_user = User(
-                    username=username,
-                    telegram_id=telegram_id,
-                    hashed_password=hashed_password
-                )
-                db.add(new_user)
-                await db.commit()
-                await message.reply(f"Пользователь {username} успешно добавлен!")
-        except Exception as e:
-            await message.reply("Произошла ошибка!")
-            logging.error(f"Ошибка: {e}")
-
-
 # Команда для получения всех пользователей
 @router.message(Command("users"))
 async def list_users_handler(message: Message):
@@ -240,7 +237,6 @@ async def list_habits(message: Message):
             response_lines.append(f"{habit.id}. {habit.name_habit} — {status}\n   🕒 Напоминания: {times_text}")
 
         await message.answer("📋 Ваши привычки и расписания:\n\n" + "\n\n".join(response_lines))
-
 
 
 from aiogram.filters.command import CommandObject
@@ -351,6 +347,12 @@ async def set_habit_status(message: Message, command: CommandObject):
     async with async_session() as db:
         telegram_id = message.from_user.id
 
+        scheduler.add_job(
+            reset_habit_completion,
+            trigger=CronTrigger(hour=0, minute=0, timezone=TIMEZONE),
+            id="reset_completion_daily",
+            replace_existing=True
+        )
         # Проверяем аргументы команды
         if not command.args:
             await message.answer("Использование: /set_habit_status <id привычки> <выполнил/не выполнил>")
@@ -458,7 +460,6 @@ async def set_schedule(message: Message):
         await message.answer(f"⚠️ Ошибка: {e}")
 
 
-
 # Обработчик команды /help
 @router.message(Command("help"))
 async def help_command(message: Message):
@@ -474,7 +475,6 @@ async def set_bot_commands(bot: Bot):
     commands = [
         BotCommand(command="start", description="Начать работу с ботом"),
         BotCommand(command="help", description="Показать список команд"),
-        BotCommand(command="adduser", description="Добавить нового пользователя"),
         BotCommand(command="addhabit", description="Добавить новую привычку"),
         BotCommand(command="users", description="Показать список пользователей"),
         BotCommand(command="habit_list", description="Показать список привычек"),

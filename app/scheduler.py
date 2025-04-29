@@ -1,5 +1,5 @@
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 
 from app.bot import bot, dp, BOT_TOKEN
@@ -33,6 +33,7 @@ async def load_schedules_from_db(session):
             # Получаем Telegram ID через habit → user
             telegram_id = schedule.habit.user.telegram_id
 
+
             scheduler.add_job(
                 schedule_habit_reminder,
                 trigger=CronTrigger(hour=hour, minute=minute, timezone=TIMEZONE),
@@ -61,6 +62,7 @@ async def schedule_habit_reminder(telegram_id: int, habit_name: str):
             if not user:
                 raise ValueError(f"Пользователь с Telegram ID {telegram_id} не найден")
 
+
             for habit in user.habits:
                 # Опционально: проверка, есть ли для привычки расписание
                 if habit.schedules:
@@ -68,10 +70,17 @@ async def schedule_habit_reminder(telegram_id: int, habit_name: str):
                         chat_id=telegram_id,
                         text=f"Напоминание: не забудьте выполнить привычку «{habit_name}» 🕒"
                     )
+                if habit.is_completed:
+                    logging.info(f"Привычка {habit_name} уже выполнена сегодня, напоминание не отправляется.")
+                    return
         except Exception as e:
             logging.error(f"Ошибка при отправке напоминания для пользователя {telegram_id}: {e}")
 
 
-
+async def reset_habit_completion():
+    async with async_session() as session:
+        await session.execute(update(Habit).values(is_completed=False))
+        await session.commit()
+        logging.info("Все привычки сброшены на не выполнены.")
 
 
