@@ -1,15 +1,22 @@
 services:
   - type: web
-    name: telegram-bot
-    env: docker
+    name: telegram-fastapi-bot
+    env: python
     plan: free
     region: frankfurt
+    branch: main  # или твоя ветка
+    buildCommand: |
+      pip install poetry
+      poetry install --no-root
+    startCommand: poetry run uvicorn app.main:app --host 0.0.0.0 --port 10000
     envVars:
       - key: BOT_TOKEN
         sync: false
       - key: WEBHOOK_URL
         sync: false
       - key: WEBHOOK_PATH
-        sync: false
+        value: /webhook
+      - key: TIMEZONE
+        value: Europe/Moscow
       - key: DATABASE_URL
         sync: false
