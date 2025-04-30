@@ -98,9 +98,9 @@ app = FastAPI()
 # Получение URL для Webhook из переменной окружения
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
-# Если WEBHOOK_URL не задан, пытаемся получить его из RENDER_EXTERNAL_URL
+# Если WEBHOOK_URL не задан, пытаемся получить его из RAILWAY_STATIC_URL
 if not WEBHOOK_URL:
-    render_host = os.getenv("RENDER_EXTERNAL_URL")
+    render_host = os.getenv("RAILWAY_STATIC_URL")
     if render_host:
         # Удаляем символ "/" в конце, если он присутствует
         WEBHOOK_URL = render_host.rstrip("/")
