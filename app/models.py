@@ -16,7 +16,7 @@ class User(Base):
     created_at = Column(DateTime, server_default=func.now())
 
     habits = relationship("Habit", back_populates="user", cascade="all, delete-orphan")
-
+    habit_days = Column(Integer, default=21)
 
     def __repr__(self):
         return f"<User(id={self.id}, telegram_id={self.telegram_id})>"

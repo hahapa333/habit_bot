@@ -1,14 +1,17 @@
 import asyncio
 from datetime import datetime
+import re
 
 import aioschedule
+from aiogram.fsm.context import FSMContext
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI
 from aiogram import Bot, Dispatcher, Router
-from aiogram.types import Update, Message, BotCommand
-from sqlalchemy import update
+from aiogram.types import Update, Message, BotCommand, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from sqlalchemy import update, delete
 from sqlalchemy.orm import selectinload
 
+from app.FSMContext_class import HabitForm, EditScheduleForm, EditHabitForm
 from app.config_env import settings
 import logging
 import bcrypt
@@ -41,6 +44,11 @@ def hash_password(password: str) -> str:
 # Регистрация маршрутов
 @router.message(Command("start"))
 async def start_command(message: Message):
+    """
+    Обработчик команды /start. Регистрирует нового пользователя или сообщает, что он уже существует.
+
+    :param message: Объект сообщения от пользователя.
+    """
     async with async_session() as db:
         try:
             username = message.from_user.username or "Без имени"
@@ -72,6 +80,11 @@ async def start_command(message: Message):
 
 @router.message(Command("echo"))
 async def echo_handler(message: Message):
+    """
+    Обработчик команды /echo. Повторяет сообщение пользователя.
+
+    :param message: Объект сообщения от пользователя.
+    """
     await message.answer(f"Вы сказали: {message.text}")
 
 
@@ -85,7 +98,12 @@ app = FastAPI()
 # Webhook endpoint
 @app.post(WEBHOOK_PATH)
 async def telegram_webhook(update: dict):  # Тип данных изменён на dict
-    """Получает обновления от Telegram"""
+    """
+    Обработчик Webhook для получения обновлений от Telegram.
+
+    :param update: Обновление в виде словаря.
+    :return: Ответ в формате JSON.
+    """
     try:
         telegram_update = Update(**update)
         await dp.feed_update(bot, telegram_update)  # Новый метод для обработки обновлений
@@ -98,7 +116,13 @@ async def telegram_webhook(update: dict):  # Тип данных изменён 
 
 @app.on_event("startup")
 async def on_startup():
-    # Настройка логирования
+    """
+    Действия, выполняемые при запуске приложения:
+    - Создание схемы базы данных.
+    - Установка команд бота.
+    - Установка Webhook.
+    - Запуск планировщика.
+    """
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s"
@@ -124,7 +148,8 @@ async def on_startup():
     try:
         assert WEBHOOK_URL, "WEBHOOK_URL не задан."
         assert WEBHOOK_PATH, "WEBHOOK_PATH не задан."
-        await bot.set_webhook(WEBHOOK_URL + WEBHOOK_PATH)
+        await bot.set_webhook(WEBHOOK_URL + WEBHOOK_PATH,
+                              allowed_updates=["message", "callback_query"])
         logging.info(f"Webhook установлен на {WEBHOOK_URL + WEBHOOK_PATH}")
     except Exception as e:
         logging.error(f"Ошибка при установке Webhook: {e}")
@@ -145,18 +170,21 @@ async def on_startup():
 
 @app.get("/")
 async def root():
+    """
+    Главная страница приложения.
+
+    :return: Сообщение о подключении к PostgreSQL.
+    """
     return {"message": "PostgreSQL подключён успешно."}
 
 
 # Удаление Webhook при завершении работы
 @app.on_event("shutdown")
 async def on_shutdown():
-    """Остановка задач при завершении приложения"""
-    task = app.state.scheduler_task
-    if task:
-        task.cancel()
-        logging.info("Задача планировщика остановлена.")
-
+    """
+    Действия, выполняемые при завершении работы приложения:
+    - Закрытие сессии бота.
+    """
     await bot.session.close()
     logging.info("Бот остановлен, Webhook удален")
 
@@ -164,6 +192,11 @@ async def on_shutdown():
 # Команда для получения всех пользователей
 @router.message(Command("users"))
 async def list_users_handler(message: Message):
+    """
+    Обработчик команды /users. Возвращает список всех пользователей из базы данных.
+
+    :param message: Объект сообщения от пользователя.
+    """
     async with async_session() as db:
         result = await db.execute(select(User))
         users = result.scalars().all()
@@ -176,35 +209,230 @@ async def list_users_handler(message: Message):
 
 # Добавить новую привычку
 @router.message(Command("addhabit"))
-async def add_habit(message: Message):
-    # Попросим ввести название привычки
-    await message.answer("Введите название своей привычки:")
+async def start_add_habit(message: Message, state: FSMContext):
+    """
+    Обработчик команды /users. Возвращает список всех пользователей из базы данных.
 
-    @router.message()
-    async def save_habits(message: Message):
+    :param message: Объект сообщения от пользователя.
+    """
+    await message.answer("Введите название своей привычки:")
+    await state.set_state(HabitForm.name)
+
+
+@router.message(HabitForm.name)
+async def get_habit_name(message: Message, state: FSMContext):
+    """
+    Обрабатывает ввод названия привычки и переходит к шагу ввода времени напоминаний.
+
+    :param message: Объект сообщения от пользователя.
+    :param state: Состояние FSM для управления шагами ввода.
+    """
+    await state.update_data(name=message.text, times=[])
+    await message.answer(
+        "Введите время напоминания в формате HH:MM. "
+        "Можете ввести несколько по одному. Напишите 'Готово', когда закончите:"
+    )
+    await state.set_state(HabitForm.times)
+
+
+@router.message(HabitForm.times)
+async def get_schedule_times(message: Message, state: FSMContext):
+    """
+    Обрабатывает ввод времени напоминаний для привычки. Проверяет формат времени и сохраняет данные.
+
+    :param message: Объект сообщения от пользователя.
+    :param state: Состояние FSM для управления шагами ввода.
+    """
+    user_input = message.text.strip()
+
+    # Если пользователь завершает ввод
+    if user_input.lower() == "готово":
+        data = await state.get_data()
+        name = data.get("name")
+        times = data.get("times", [])
+
+        if not times:
+            await message.answer("Вы не указали ни одного времени.")
+            return
+
         async with async_session() as db:
             try:
-                name_habit = message.text
                 telegram_id = message.from_user.id
+                result = await db.execute(select(User).where(User.telegram_id == telegram_id))
+                user = result.scalar_one_or_none()
 
-                # SQL-запрос
-                query = select(User).where(User.telegram_id == telegram_id)
-                result = await db.execute(query)
-                user = result.scalar()
+                if not user:
+                    await message.answer("Ошибка: пользователь не найден.")
+                    return
 
-                if user:
-                    new_habit = Habit(user_id=user.id, name_habit=name_habit)
-                    db.add(new_habit)
-                    await db.commit()
-                    await message.answer(f"Привычка '{name_habit}' успешно добавлена!")
+                new_habit = Habit(user_id=user.id, name_habit=name)
+                db.add(new_habit)
+                await db.flush()  # Получаем habit.id без коммита
 
-                else:
-                    await message.answer("Ошибка: привычка не добавлена.")
+                for time in set(times):  # убираем дубли
+                    try:
+                        hour, minute = map(int, time.split(":"))
+                        assert 0 <= hour < 24 and 0 <= minute < 60
+                    except Exception:
+                        await message.answer(f"Неверный формат времени: {time}. Пропускаю.")
+                        continue
+
+                    new_schedule = UserSchedule(habit_id=new_habit.id, time=time)
+                    db.add(new_schedule)
+                    await db.flush()  # Получаем schedule.id для job_id
+
+                    job_id = f"reminder_{new_habit.id}_{time.replace(':', '-')}"
+                    if not scheduler.get_job(job_id):
+                        scheduler.add_job(
+                            schedule_habit_reminder,
+                            trigger=CronTrigger(hour=hour, minute=minute, timezone=TIMEZONE),
+                            args=[user.telegram_id, new_habit.name_habit],
+                            id=job_id,
+                            replace_existing=True
+                        )
+                    logging.info(f"Добавлено напоминание: {job_id} для {time}")
+
+                await db.commit()
+                await message.answer(
+                    f"Привычка «{name}» добавлена с напоминаниями: {', '.join(times)}")
 
             except Exception as e:
-                await message.reply("Произошла ошибка!")
-                logging.error(f"Ошибка: {e}")
+                await message.answer("Ошибка при сохранении.")
+                logging.error(f"Ошибка при добавлении привычки: {e}")
 
+        await state.clear()
+
+    # Обработка времени — проверка формата на каждом шаге
+    else:
+        try:
+            hour, minute = map(int, user_input.split(":"))
+            assert 0 <= hour < 24 and 0 <= minute < 60
+        except:
+            await message.answer("Неверный формат. Введите время в формате HH:MM.")
+            return
+
+        data = await state.get_data()
+        times = data.get("times", [])
+        times.append(user_input)
+        await state.update_data(times=times)
+
+        await message.answer(f"Время {user_input} добавлено. Введите ещё или напишите 'Готово'.")
+
+
+# Конец блока создания привычки
+
+# Изменение привычки
+@router.callback_query(lambda c: c.data.startswith("edit_schedule:"))
+async def start_edit_schedule(callback: CallbackQuery, state: FSMContext):
+    habit_id = int(callback.data.split(":")[1])
+    await state.set_state(EditScheduleForm.new_times)
+    await state.update_data(habit_id=habit_id)
+    await callback.message.answer("Введите новое время в формате HH:MM (например, 08:30):")
+
+
+@router.message(EditScheduleForm.new_times)
+async def process_new_schedule_time(message: Message, state: FSMContext):
+    async with async_session() as db:
+        data = await state.get_data()
+        habit_id = data.get("habit_id")
+        new_time = message.text.strip()
+        telegram_id = message.from_user.id
+
+        # Проверка формата времени
+        if not re.match(r"^\d{2}:\d{2}$", new_time):
+            await message.answer("Неверный формат времени. Используйте формат HH:MM.")
+            return
+
+        result = await db.execute(select(User).where(User.telegram_id == telegram_id))
+        user = result.scalar_one_or_none()
+
+        if not user:
+            await message.answer("Пользователь не найден.")
+            await state.clear()
+            return
+
+        # Проверка существования привычки
+        result = await db.execute(
+            select(Habit).where(Habit.id == habit_id, Habit.user_id == user.id)
+        )
+        habit = result.scalar_one_or_none()
+
+        if not habit:
+            await message.answer("Привычка не найдена.")
+            await state.clear()
+            return
+        hour, minute = map(int, new_time.split(":"))
+
+        if not (0 <= hour < 24 and 0 <= minute < 60):
+            raise ValueError("Неверный диапазон времени.")
+        # Удалим старое расписание и добавим новое
+        await db.execute(delete(UserSchedule).where(UserSchedule.habit_id == habit.id))
+        new_schedule = UserSchedule(habit_id=habit.id, time=new_time)
+        db.add(new_schedule)
+        await db.commit()
+        # Планируем задачу
+        job_id = f"reminder_habit_{habit.id}"
+
+        scheduler.add_job(
+            schedule_habit_reminder,
+            trigger=CronTrigger(hour=hour, minute=minute, timezone=TIMEZONE),
+            args=[user.telegram_id, habit.name_habit],
+            id=job_id,
+            replace_existing=True
+        )
+        await message.answer(f"Расписание для привычки обновлено на {new_time} ⏰")
+    await state.clear()
+
+
+# Конец блока изменения привычки
+
+
+# Изменение названия привычки
+@router.message(EditHabitForm.new_habit)
+async def process_new_habit_name(message: Message, state: FSMContext):
+    async with async_session() as db:
+        data = await state.get_data()
+        habit_id = data.get("habit_id")
+        new_name = message.text.strip()
+        telegram_id = message.from_user.id
+
+        result = await db.execute(select(User).where(User.telegram_id == telegram_id))
+        user = result.scalar_one_or_none()
+
+        if not user:
+            await message.answer("Пользователь не найден.")
+            await state.clear()
+            return
+
+        result = await db.execute(
+            select(Habit).where(Habit.id == habit_id, Habit.user_id == user.id)
+        )
+        habit = result.scalar_one_or_none()
+
+        if not habit:
+            await message.answer("Привычка не найдена.")
+            await state.clear()
+            return
+
+        habit.name_habit = new_name
+        await db.commit()
+        await message.answer(f"Название привычки обновлено на: {new_name}")
+
+    await state.clear()
+
+
+@router.callback_query(lambda c: c.data.startswith("edit_habit:"))
+async def handle_edit_habit_callback(callback_query: CallbackQuery, state: FSMContext):
+    habit_id = int(callback_query.data.split(":")[1])
+
+    await state.set_state(EditHabitForm.new_habit)
+    await state.update_data(habit_id=habit_id)
+
+    await callback_query.message.answer("Введите новое название привычки:")
+    await callback_query.answer()  # Закрыть "часики"
+
+
+# Конец блока изменения названия привычки
 
 # Команда для получения всех привычек пользователя
 @router.message(Command("habit_list"))
@@ -229,235 +457,114 @@ async def list_habits(message: Message):
             await message.answer("ℹ️ У вас пока нет привычек.")
             return
 
-        response_lines = []
         for habit in user.habits:
             schedule_times = [s.time for s in habit.schedules]
             times_text = ", ".join(schedule_times) if schedule_times else "⏰ Нет напоминаний"
             status = "✅ Выполнено" if habit.is_completed else "❌ Не выполнено"
-            response_lines.append(f"{habit.id}. {habit.name_habit} — {status}\n   🕒 Напоминания: {times_text}")
 
-        await message.answer("📋 Ваши привычки и расписания:\n\n" + "\n\n".join(response_lines))
+            text = f"{habit.id}. {habit.name_habit} — {status}\n🕒 Напоминания: {times_text}"
+
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="✅ Выполнил", callback_data=f"complete_habit:{habit.id}"),
+                    InlineKeyboardButton(text="✏️ Изменить", callback_data=f"edit_habit:{habit.id}"),
+                    InlineKeyboardButton(text="❌ Удалить", callback_data=f"delete_habit:{habit.id}"),
+                    InlineKeyboardButton(text="🕒 Изменить расписание", callback_data=f"edit_schedule:{habit.id}")
+
+                ]
+            ])
+
+            await message.answer(text, reply_markup=keyboard)
 
 
-from aiogram.filters.command import CommandObject
+@router.callback_query(lambda c: c.data.startswith("delete_habit:"))
+async def handle_delete_habit(callback_query: CallbackQuery):
+    habit_id = int(callback_query.data.split(":")[1])
+    telegram_id = callback_query.from_user.id
 
-
-@router.message(Command("edit_habit"))
-async def edit_habit(message: Message, command: CommandObject):
-    """
-    Обработчик команды для редактирования названия привычки.
-    Формат команды: /edit_habit <id привычки> <новое название>
-    """
     async with async_session() as db:
-        telegram_id = message.from_user.id
-
-        # Проверяем, что команда содержит ID и новое название
-        if not command.args:
-            await message.answer("Использование: /edit_habit <id привычки> <новое название>")
-            return
-
-        args = command.args.split(maxsplit=1)
-        if len(args) < 2:
-            await message.answer("Использование: /edit_habit <id привычки> <новое название>")
-            return
-
-        try:
-            habit_id = int(args[0])
-            new_name = args[1].strip()
-        except ValueError:
-            await message.answer("ID привычки должен быть числом.")
-            return
-
-        # Получаем пользователя по Telegram ID
-        query = select(User).where(User.telegram_id == telegram_id)
-        result = await db.execute(query)
-        user = result.scalar()
+        result = await db.execute(select(User).where(User.telegram_id == telegram_id))
+        user = result.scalar_one_or_none()
 
         if not user:
-            await message.answer("Ошибка: пользователь не найден.")
+            await callback_query.message.answer("Ошибка: пользователь не найден.")
             return
 
-        # Получаем привычку по ID и проверяем принадлежность пользователю
-        query = select(Habit).where(Habit.id == habit_id, Habit.user_id == user.id)
-        result = await db.execute(query)
-        habit = result.scalar()
+        result = await db.execute(
+            select(Habit).where(Habit.id == habit_id, Habit.user_id == user.id)
+        )
+        habit = result.scalar_one_or_none()
 
         if not habit:
-            await message.answer("Привычка с таким ID не найдена или не принадлежит вам.")
+            await callback_query.message.answer("Привычка не найдена или уже удалена.")
             return
 
-        # Редактируем привычку
-        habit.name_habit = new_name
-        await db.commit()
-
-        await message.answer(f"Привычка успешно обновлена: {habit.id}. {habit.name_habit}")
-
-
-@router.message(Command("delete_habit"))
-async def delete_habit(message: Message, command: CommandObject):
-    """
-    Обработчик команды для удаления привычки.
-    Формат команды: /delete_habit <id привычки>
-    """
-    async with async_session() as db:
-        telegram_id = message.from_user.id
-
-        # Проверяем, что команда содержит ID привычки
-        if not command.args:
-            await message.answer("Использование: /delete_habit <id привычки>")
-            return
-
-        try:
-            habit_id = int(command.args.strip())
-        except ValueError:
-            await message.answer("ID привычки должен быть числом.")
-            return
-
-        # Получаем пользователя по Telegram ID
-        query = select(User).where(User.telegram_id == telegram_id)
-        result = await db.execute(query)
-        user = result.scalar()
-
-        if not user:
-            await message.answer("Ошибка: пользователь не найден.")
-            return
-
-        # Проверяем, существует ли привычка с указанным ID и принадлежит ли она пользователю
-        query = select(Habit).where(Habit.id == habit_id, Habit.user_id == user.id)
-        result = await db.execute(query)
-        habit = result.scalar()
-
-        if not habit:
-            await message.answer("Привычка с таким ID не найдена или не принадлежит вам.")
-            return
-
-        # Удаляем привычку
         await db.delete(habit)
         await db.commit()
 
-        await message.answer(f"Привычка {habit_id} успешно удалена.")
+        await callback_query.message.edit_text(f"Привычка '{habit.name_habit}' удалена.")
 
 
-@router.message(Command("set_habit_status"))
-async def set_habit_status(message: Message, command: CommandObject):
-    """
-    Обработчик команды для фиксации выполнения привычки.
-    Формат команды: /set_habit_status <id привычки> <выполнил/не выполнил>
-    """
+@router.callback_query(lambda c: c.data.startswith("complete_habit:"))
+async def complete_habit(callback_query: CallbackQuery):
+    habit_id = int(callback_query.data.split(":")[1])
+    telegram_id = callback_query.from_user.id
+
     async with async_session() as db:
-        telegram_id = message.from_user.id
-
+        result = await db.execute(select(User).where(User.telegram_id == telegram_id))
+        user = result.scalar_one_or_none()
         scheduler.add_job(
             reset_habit_completion,
             trigger=CronTrigger(hour=0, minute=0, timezone=TIMEZONE),
             id="reset_completion_daily",
             replace_existing=True
         )
-        # Проверяем аргументы команды
-        if not command.args:
-            await message.answer("Использование: /set_habit_status <id привычки> <выполнил/не выполнил>")
-            return
-
-        args = command.args.split(maxsplit=1)
-        if len(args) < 2:
-            await message.answer("Использование: /set_habit_status <id привычки> <выполнил/не выполнил>")
-            return
-
-        try:
-            habit_id = int(args[0])
-            status_text = args[1].strip().lower()
-        except ValueError:
-            await message.answer("ID привычки должен быть числом.")
-            return
-
-        # Определяем статус выполнения
-        if status_text == "выполнил":
-            is_completed = True
-        elif status_text == "не выполнил":
-            is_completed = False
-        else:
-            await message.answer("Статус должен быть либо 'выполнил', либо 'не выполнил'.")
-            return
-
-        # Проверяем, существует ли пользователь
-        query = select(User).where(User.telegram_id == telegram_id)
-        result = await db.execute(query)
-        user = result.scalar()
-
         if not user:
-            await message.answer("Ошибка: пользователь не найден.")
+            await callback_query.message.answer("Ошибка: пользователь не найден.")
             return
 
-        # Проверяем, существует ли привычка и принадлежит ли она пользователю
-        query = select(Habit).where(Habit.id == habit_id, Habit.user_id == user.id)
-        result = await db.execute(query)
-        habit = result.scalar()
+        result = await db.execute(
+            select(Habit).where(Habit.id == habit_id, Habit.user_id == user.id)
+        )
+        habit = result.scalar_one_or_none()
 
         if not habit:
-            await message.answer("Привычка с таким ID не найдена или не принадлежит вам.")
+            await callback_query.message.answer("Привычка не найдена.")
             return
 
-        # Фиксируем выполнение
-        habit.is_completed = is_completed
+        habit.is_completed = True
         await db.commit()
 
-        status_message = "выполнена" if is_completed else "не выполнена"
-        await message.answer(f"Привычка {habit.id} успешно отмечена как {status_message}.")
+        await callback_query.message.edit_text(f"Привычка «{habit.name_habit}» отмечена как выполненная ✅")
 
 
-# === Команда установки расписания ===
-@router.message(Command("set_schedule"))
-async def set_schedule(message: Message):
-    try:
-        parts = message.text.strip().split()
-        if len(parts) != 3:
-            raise ValueError("Неверный формат команды. Используйте: /set_schedule <habit_id> <HH:MM>")
+@router.message(Command("setdays"))
+async def set_habit_days(message: Message):
+    args = message.text.split()
+    if len(args) != 2 or not args[1].isdigit():
+        await message.answer("Используйте формат: /setdays 30")
+        return
 
-        habit_id = int(parts[1])
-        time_str = parts[2]
-        hour, minute = map(int, time_str.split(":"))
+    days = int(args[1])
+    if not (1 <= days <= 100):
+        await message.answer("Число должно быть от 1 до 100.")
+        return
 
-        if not (0 <= hour < 24 and 0 <= minute < 60):
-            raise ValueError("Неверный диапазон времени.")
+    async with async_session() as session:
+        result = await session.execute(select(User).where(User.telegram_id == message.from_user.id))
+        user = result.scalar_one_or_none()
+        if not user:
+            await message.answer("Пользователь не найден.")
+            return
 
-        async with async_session() as session:
-            # Проверяем, принадлежит ли привычка пользователю
-            user_query = select(User).where(User.telegram_id == message.from_user.id)
-            user_result = await session.execute(user_query)
-            user = user_result.scalar_one_or_none()
+        await session.execute(
+            update(User)
+            .where(User.id == user.id)
+            .values(habit_days=days)
+        )
+        await session.commit()
 
-            if not user:
-                raise ValueError("Пользователь не найден.")
-
-            habit_query = select(Habit).where(Habit.id == habit_id, Habit.user_id == user.id)
-            habit_result = await session.execute(habit_query)
-            habit = habit_result.scalar_one_or_none()
-
-            if not habit:
-                raise ValueError("Привычка не найдена или не принадлежит вам.")
-
-            # Создаём новое расписание
-            new_schedule = UserSchedule(habit_id=habit_id, time=time_str)
-            session.add(new_schedule)
-            await session.commit()
-
-            # Планируем задачу
-            job_id = f"reminder_{new_schedule.id}"
-            scheduler.add_job(
-                schedule_habit_reminder,
-                trigger=CronTrigger(hour=hour, minute=minute, timezone=TIMEZONE),
-                args=[user.telegram_id, habit.name_habit],
-                id=job_id,
-                replace_existing=True
-            )
-
-        await message.answer(f"✅ Добавлено напоминание для '{habit.name_habit}' на {time_str}")
-
-    except ValueError as ve:
-        await message.answer(f"❌ {ve}")
-    except Exception as e:
-        logging.error(f"Ошибка при установке расписания: {e}")
-        await message.answer(f"⚠️ Ошибка: {e}")
+        await message.answer(f"Срок закрепления привычек установлен на {days} дней ✅")
 
 
 # Обработчик команды /help
@@ -467,6 +574,10 @@ async def help_command(message: Message):
         "/start - Начать взаимодействие с ботом\n"
         "/help - Показать список команд\n"
         "/echo - Повторить ваше сообщение\n"
+        "/addhabit - Добавить новую привычку\n"
+        "/users - Показать список пользователей\n"
+        "/habit_list - Показать список привычек\n"
+        "/setdays - Установить срок закрепления привычек\n"
     )
     await message.answer(f"Список доступных команд:\n{commands}")
 
@@ -478,10 +589,7 @@ async def set_bot_commands(bot: Bot):
         BotCommand(command="addhabit", description="Добавить новую привычку"),
         BotCommand(command="users", description="Показать список пользователей"),
         BotCommand(command="habit_list", description="Показать список привычек"),
-        BotCommand(command="edit_habit", description="Редактировать привычку"),
-        BotCommand(command="delete_habit", description="Удалить привычку"),
-        BotCommand(command="set_habit_status", description="выполнил не выполнил"),
-        BotCommand(command="set_schedule", description="установить напоминание"),
+        BotCommand(command="setdays", description="Установить срок закрепления привычек"),
         BotCommand(command="echo", description="Повторить ваше сообщение"),
     ]
     await bot.set_my_commands(commands)
