@@ -43,22 +43,22 @@
 # Используем официальный Python-образ
 FROM python:3.10-slim
 
-# Устанавливаем рабочую директорию
 WORKDIR /app
 
-# Копируем зависимости
-COPY pyproject.toml ./
-COPY poetry.lock ./
-RUN pip install --upgrade pip \
- && pip install poetry \
- && poetry config virtualenvs.create false \
- && poetry install --no-dev
+# Poetry
+RUN pip install --upgrade pip && pip install poetry
 
-# Копируем весь код
+# Копируем зависимости
+COPY pyproject.toml poetry.lock ./
+RUN poetry config virtualenvs.create false \
+ && poetry install --no-dev --no-root
+
+# Копируем проект
 COPY . .
 
-# Экспонируем порт (Render использует этот порт для входящего трафика)
-EXPOSE 10000
+# Указываем порт, который Render слушает
+EXPOSE 8000
 
-# Команда запуска — FastAPI через Uvicorn
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "10000"]
+# Команда запуска FastAPI приложения
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+

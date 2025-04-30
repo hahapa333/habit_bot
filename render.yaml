@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: telegram-bot
+    env: docker
+    plan: free
+    region: frankfurt
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: WEBHOOK_URL
+        sync: false
+      - key: WEBHOOK_PATH
+        sync: false
+      - key: DATABASE_URL
+        sync: false
