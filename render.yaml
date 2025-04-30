@@ -1,22 +1,35 @@
 services:
   - type: web
-    name: telegram-fastapi-bot
-    env: python
+    name: habit-bot
+    env: docker
     plan: free
-    region: frankfurt
-    branch: main  # или твоя ветка
-    buildCommand: |
-      pip install poetry
-      poetry install --no-root
-    startCommand: poetry run uvicorn app.main:app --host 0.0.0.0 --port 10000
+    autoDeploy: true
     envVars:
-      - key: BOT_TOKEN
-        sync: false
-      - key: WEBHOOK_URL
-        sync: false
-      - key: WEBHOOK_PATH
-        value: /webhook
-      - key: TIMEZONE
-        value: Europe/Moscow
+      - key: DB_USER
+        value: postgres
+      - key: DB_PASS
+        value: postgres
+      - key: DB_NAME
+        value: habit_db
+      - key: DB_PORT
+        value: 5432
+      - key: DB_HOST
+        value: db
       - key: DATABASE_URL
-        sync: false
+        value: postgresql+asyncpg://postgres:postgres@db:5432/habit_db
+#      - key: WEBHOOK_URL
+#        value: https://habit-bot-w09k.onrender.com
+      - key: WEBHOOK_PATH
+        value: /webhook/7720543768:AAG86nfnyxj2ksluL2EDEkSCLnkdLE5UqAo
+      - key: WEBAPP_HOST
+        value: 0.0.0.0
+      - key: WEBAPP_PORT
+        value: 8000
+      - key: CELERY_BROKER
+        value: redis://redis:6379/0
+      - key: BOT_TOKEN
+        value: 7720543768:AAG86nfnyxj2ksluL2EDEkSCLnkdLE5UqAo
+      - key: ALGORITHM
+        value: HS256
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: "30"

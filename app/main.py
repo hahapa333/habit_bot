@@ -1,4 +1,5 @@
 import asyncio
+import os
 from datetime import datetime
 import re
 
@@ -21,7 +22,7 @@ from app.database import engine, async_session
 from app.models import Base, User, Habit, UserSchedule
 from aiogram.filters import Command, CommandObject
 
-from app.bot import bot, dp, BOT_TOKEN, WEBHOOK_URL, WEBHOOK_PATH
+from app.bot import bot, dp, BOT_TOKEN, WEBHOOK_PATH
 # from app.scheduler import scheduler, schedule_habit_reminder, schedule_interval
 
 
@@ -94,6 +95,18 @@ dp.include_router(router)
 # Инициализация FastAPI
 app = FastAPI()
 
+# Получение URL для Webhook из переменной окружения
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+
+# Если WEBHOOK_URL не задан, пытаемся получить его из RENDER_EXTERNAL_URL
+if not WEBHOOK_URL:
+    render_host = os.getenv("RENDER_EXTERNAL_URL")
+    if render_host:
+        # Удаляем символ "/" в конце, если он присутствует
+        WEBHOOK_URL = render_host.rstrip("/")
+    else:
+        # Логируем предупреждение, если ни одна из переменных окружения не задана
+        logging.warning("⚠️ WEBHOOK_URL не задан и RENDER_EXTERNAL_URL не найден. Webhook может не работать.")
 
 # Webhook endpoint
 @app.post(WEBHOOK_PATH)

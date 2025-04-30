@@ -39,3 +39,5 @@ COPY --chown=appuser:appgroup . .
 
 # Открытие порта
 EXPOSE 8000
+
+CMD ["sh", "-c", "poetry run alembic upgrade head && poetry run uvicorn app.main:app --host 0.0.0.0 --port $WEBAPP_PORT"]
