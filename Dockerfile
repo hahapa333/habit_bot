@@ -1,4 +1,4 @@
-FROM python:3.10.12-buster
+FROM python:3.10-bookworm
 
 # Системные переменные окружения
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -7,8 +7,12 @@ ENV PYTHONPATH=/code
 
 RUN ln -sf /usr/share/zoneinfo/Europe/Moscow /etc/localtime && echo "Europe/Moscow" > /etc/timezone
 # Шаг 1: Установка системных зависимостей
-RUN apt-get update && apt-get install -y --no-install-recommends python3-dev\
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-dev \
+    build-essential \
+    libpq-dev \
     && rm -rf /var/lib/apt/lists/*
+
 
 # Обновляем pip и устанавливаем Poetry
 RUN pip install --upgrade pip \
@@ -39,5 +43,5 @@ COPY --chown=appuser:appgroup . .
 
 # Открытие порта
 EXPOSE 8000
-# CMD ["poetry", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
 
